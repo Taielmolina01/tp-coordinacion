@@ -18,7 +18,7 @@ func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem
 	return inner.SerializeMessage(data)
 }
 
-func (messageHandler *MessageHandler) SerializeEofMessage() (*middleware.Message, error) {
+func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
 	data := []fruititem.FruitItem{}
 	return inner.SerializeMessage(data)
 }

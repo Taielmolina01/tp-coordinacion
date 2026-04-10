@@ -202,7 +202,7 @@ func (gateway *Gateway) handleFruitRecordMessage(client clientregistry.ClientSta
 
 func (gateway *Gateway) handleEndOfRecordsMessage(client clientregistry.ClientState) error {
 	slog.Info("Received END_OF_RECORDS message")
-	message, err := client.Handler.SerializeEofMessage()
+	message, err := client.Handler.SerializeEOFMessage()
 	if err != nil {
 		slog.Debug("While serializing END_OF_RECORDS  message", "err", err)
 		return err
