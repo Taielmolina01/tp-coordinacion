@@ -17,6 +17,8 @@ type ConnSettings struct {
 	Port     int
 }
 
+const _URL_SIGN = "amqp://guest:guest@%s:%d/"
+
 type Middleware interface {
 
 	//Comienza a escuchar a la cola/exchange e invoca a callbackFunc tras
