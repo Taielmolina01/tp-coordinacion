@@ -75,6 +75,8 @@ func run() int {
 		return 1
 	}
 
+	go server.HandleSignals()
+
 	server.Run()
 	return 0
 }

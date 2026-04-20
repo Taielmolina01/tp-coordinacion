@@ -7,4 +7,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+require github.com/google/uuid v1.6.0 // indirect
+
 replace github.com/7574-sistemas-distribuidos/tp-coordinacion => ./src

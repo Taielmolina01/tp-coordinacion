@@ -80,6 +80,7 @@ func (gateway *Gateway) Run() error {
 
 		handler := messagehandler.NewMessageHandler()
 		client := clientregistry.ClientState{Conn: conn, Handler: &handler}
+
 		gateway.registry.Add(client)
 
 		go gateway.handleClientRequest(client)
@@ -134,11 +135,13 @@ loop:
 }
 
 func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {
+
 	clientIndex := -1
 
 	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
 		for i, client := range clients {
 			fruitTop, err := client.Handler.DeserializeResultMessage(&msg)
+
 			if err != nil {
 				slog.Debug("While reading from output queue", "err", err)
 				nack()
@@ -151,7 +154,7 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 				continue
 			}
 
-			if err := external.WriteFruitTop(client.Conn, fruitTop); err != nil {
+			if err := external.WriteFruitTop(client.Conn, fruitTop.FruitItems); err != nil {
 				slog.Debug("While writing FRUIT_TOP message", "err", err)
 				return
 			}
@@ -164,11 +167,11 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 				slog.Debug("Expected ACK message")
 				return
 			}
+
 			clientIndex = i
 			return
 		}
 		slog.Warn("No client handler could process this message")
-		nack()
 	})
 
 	if clientIndex >= 0 {
@@ -176,6 +179,8 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 		ack()
 		return
 	}
+
+	nack()
 }
 
 func (gateway *Gateway) handleFruitRecordMessage(client clientregistry.ClientState) error {
