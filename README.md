@@ -79,3 +79,14 @@ Al momento de la evaluación y ejecución de las pruebas se **descartarán** o *
 - La implementación del protocolo de comunicación externo y `FruitItem`.
 
 Redactar un breve informe explicando el modo en que se coordinan las instancias de Sum y Aggregation, así como el modo en el que el sistema escala respecto a los clientes y a la cantidad de controles.
+
+## TO DO
+
+- [ ] Agregar explicacion en README
+- [ ] Agregar caso de uso de varias aggregations.
+- [ ] Limpiar código de logs innecesarios solo de debug
+- [ ] Agregar monitor para no tener los locks a pelo en sum
+- [ ] Modularizar bien en las funciones del messagehandler que son un asco y no se entienden nada 
+- [ ] Revisar todo el código de nuevo 
+- [ ] Analizar lo de los mensajes repetidos por rabbit
+

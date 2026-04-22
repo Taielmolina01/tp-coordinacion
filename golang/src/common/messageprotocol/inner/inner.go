@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messagesprocessed"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 	"github.com/google/uuid"
 )
@@ -41,40 +43,139 @@ func SerializeMessage(fruitRecords fruititem.FruitItemFromClient) (*middleware.M
 	return &message, nil
 }
 
-func DeserializeMessage(message *middleware.Message) (*fruititem.FruitItemFromClient, bool, error) {
+func DeserializeMessage(message *middleware.Message) (*fruititem.FruitItemFromClient, *eofmessage.EofMessage, bool, error) {
 	data, err := deserializeJson([]byte((*message).Body))
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	result := fruititem.FruitItemFromClient{}
+	var clientId uuid.UUID
 	for i, datum := range data {
 		if i == 0 {
-			clientId, err := uuid.Parse(datum.(string))
+			_clientId, err := uuid.Parse(datum.(string))
 			if err != nil {
-				return nil, false, errors.New("Error parsing clientId to float64")
+				return nil, nil, false, errors.New("Error parsing clientId to float64")
 			}
-			result.ClientId = clientId
+			clientId = _clientId
 			continue
 		}
 
 		fruitPair, ok := datum.([]interface{})
 		if !ok {
-			return nil, false, errors.New("Datum is not an array")
+			if amountOfMessages, ok := datum.(float64); ok {
+				return nil, &eofmessage.EofMessage{
+						TotalMessages: uint32(amountOfMessages),
+						ClientID:      clientId,
+					},
+					true,
+					nil
+			}
+			return nil, nil, false, errors.New("Datum is not an array")
 		}
 
 		fruit, ok := fruitPair[0].(string)
 		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
+			return nil, nil, false, errors.New("Datum is not a (fruit, amount) pair")
 		}
 
 		fruitAmount, ok := fruitPair[1].(float64)
 		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
+			return nil, nil, false, errors.New("Datum is not a (fruit, amount) pair")
 		}
 
 		fruitRecord := fruititem.FruitItem{Fruit: fruit, Amount: uint32(fruitAmount)}
 		result.FruitItems = append(result.FruitItems, fruitRecord)
 	}
 
-	return &result, len(result.FruitItems) == 0, nil
+	result.ClientId = clientId
+	return &result, nil, len(result.FruitItems) == 0, nil
+}
+
+func DeserializeEOFMessage(message *middleware.Message) (*messagesprocessed.MessagesProcessed, *eofmessage.EofMessageCommit, error) {
+	data, err := deserializeJson([]byte(message.Body))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(data) == 2 {
+		clientID, ok := data[0].(string)
+		if !ok {
+			return nil, nil, errors.New("Client ID is not a valid UUID")
+		}
+
+		parsedClientID, err := uuid.Parse(clientID)
+		if err != nil {
+			return nil, nil, errors.New("Client ID is not a valid UUID")
+		}
+
+		hopsAsFloat, ok := data[1].(float64)
+		if !ok {
+			return nil, nil, errors.New("Hops is not a valid number")
+		}
+
+		return nil, &eofmessage.EofMessageCommit{ClientID: parsedClientID, Hops: int(hopsAsFloat)}, nil
+	}
+
+	if len(data) != 4 {
+		return nil, nil, errors.New("EOF message has an invalid shape")
+	}
+
+	leaderAsFloat, ok := data[0].(float64)
+	if !ok {
+		return nil, nil, errors.New("LeaderID is not a non negative number")
+	}
+	actualAmountAsFloat, ok := data[1].(float64)
+	if !ok {
+		return nil, nil, errors.New("Actual amount of messages handled is not a non negative number")
+	}
+	realAmountAsFloat, ok := data[2].(float64)
+	if !ok {
+		return nil, nil, errors.New("Real amount of messages handled is not a non negative number")
+	}
+	clientID, ok := data[3].(string)
+	if !ok {
+		return nil, nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	parsedClientID, err := uuid.Parse(clientID)
+	if err != nil {
+		return nil, nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	return &messagesprocessed.MessagesProcessed{
+		Leader:       uint32(leaderAsFloat),
+		ActualAmount: uint32(actualAmountAsFloat),
+		RealAmount:   uint32(realAmountAsFloat),
+		ClientId:     parsedClientID,
+	}, nil, nil
+}
+
+func SerializeEofFromQueueMsg(msg messagesprocessed.MessagesProcessed) (*middleware.Message, error) {
+	data, err := serializeJson([]interface{}{msg.Leader, msg.ActualAmount, msg.RealAmount, msg.ClientId})
+	if err != nil {
+		return nil, err
+	}
+	return &middleware.Message{
+		Body: string(data),
+	}, nil
+}
+
+func SerializeEofMessage(msg eofmessage.EofMessage) (*middleware.Message, error) {
+	data, err := serializeJson([]interface{}{msg.ClientID, msg.TotalMessages})
+	if err != nil {
+		return nil, err
+	}
+	return &middleware.Message{
+		Body: string(data),
+	}, nil
+}
+
+func SerializeEofMessageCommit(msg eofmessage.EofMessageCommit) (*middleware.Message, error) {
+	data, err := serializeJson([]interface{}{msg.ClientID, msg.Hops})
+	if err != nil {
+		return nil, err
+	}
+	return &middleware.Message{
+		Body: string(data),
+	}, nil
 }

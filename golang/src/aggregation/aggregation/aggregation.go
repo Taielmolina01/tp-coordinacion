@@ -30,7 +30,9 @@ type Aggregation struct {
 	outputQueue           middleware.Middleware
 	inputExchange         middleware.Middleware
 	fruitItemMapPerClient map[uuid.UUID]map[string]fruititem.FruitItem
+	eofCountPerClient     map[uuid.UUID]int
 	topSize               int
+	sumAmount             int
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -53,6 +55,8 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		inputExchange:         inputExchange,
 		fruitItemMapPerClient: map[uuid.UUID]map[string]fruititem.FruitItem{},
 		topSize:               config.TopSize,
+		sumAmount:             config.SumAmount,
+		eofCountPerClient:     map[uuid.UUID]int{},
 	}, nil
 }
 
@@ -65,7 +69,7 @@ func (aggregation *Aggregation) Run() {
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
-	fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
+	fruitRecords, _, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
 		return
@@ -81,7 +85,22 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 }
 
 func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient fruititem.FruitItemFromClient) error {
-	slog.Info("Received End Of Records message")
+	slog.Info("Received End Of Records message", "client_id", fruitItemsFromClient.ClientId)
+
+	aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]++
+	currentCount := aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]
+
+	if currentCount < aggregation.sumAmount {
+		slog.Info("Waiting more EOFs for client", "client_id", fruitItemsFromClient.ClientId, "received_eofs", currentCount, "required_eofs", aggregation.sumAmount)
+		return nil
+	}
+
+	if currentCount > aggregation.sumAmount {
+		slog.Info("Ignoring extra EOF for client", "client_id", fruitItemsFromClient.ClientId, "received_eofs", currentCount, "required_eofs", aggregation.sumAmount)
+		return nil
+	}
+
+	slog.Info("Calculating top...")
 
 	fruitTopRecords := aggregation.buildFruitTop(fruitItemsFromClient.ClientId)
 
@@ -107,6 +126,10 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient f
 		slog.Debug("While sending EOF message", "err", err)
 		return err
 	}
+
+	delete(aggregation.eofCountPerClient, fruitItemsFromClient.ClientId)
+	delete(aggregation.fruitItemMapPerClient, fruitItemsFromClient.ClientId)
+
 	return nil
 }
 
