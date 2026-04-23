@@ -172,6 +172,7 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 			return
 		}
 		slog.Warn("No client handler could process this message")
+		nack()
 	})
 
 	if clientIndex >= 0 {
