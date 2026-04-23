@@ -146,6 +146,8 @@ Dejo un diagrama de la arquitectura final del sum en adelante
 
 Lo más groso que me quedo fuera de scope es el hecho de los mensajes repetidos. En el join por ejemplo lo handlee porque necesitaba si o si que los aggregations uno y cada uno me envie su EOF por cliente; si no tuviera esto en cuenta el AGG_1 me podría sumar dos veces un EOF y capaz el AGG_3 todavia no lo habia enviado, por lo cual quizas todavía tampoco habia enviado su top. Se que esto debería estar en todos los distintos tipos de nodos pero desconozco como hacerlo por ejemplo en la working queue de los sums; si el mensaje me llega a la misma instancia de Sum es trivial, simplemente le tendria que agregar un ID al msg antes de ser despachado desde el gateway y antes de procesar me fijo si ya lo habia procesado o no, pero si el mensaje duplicado me cae en una instancia distinta de Sum, estoy obligado a coordinar esos mensajes también, para poder descartarlo si alguno de los sums lo procesó ya.
 
+También a último momento borré el uso de UUID que venia usando para identificar a los clientes desde el gateway solo porque relei la aclaración del readme de que archivos se van a reemplazar, y aunque imagino que fue algo que se escapó no mas, al no poder hacer copy del go.sum del client (cosa que en todo el resto de dockerfiles está) no puedo poner una library nueva que no sea estandar. Use la variable global en el messagehandler porque sin poder copiar el go.sum y sin poder más codigo en la folder gateway no tengo otra alternativa.
+
 ## TO DO
 
 - [X] Agregar explicacion en README
