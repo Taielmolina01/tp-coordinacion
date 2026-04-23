@@ -101,7 +101,7 @@ Para solucionarlo, pensé a gran escala dos opciones:
 2. Coordinar! Lo dice bien el tp y se ve en Concurrentes distintos algoritmos para coordinar mensajes y que todas las instancias estén enterados de lo que pasa  (== que estén coordinados). Para dicha coordinación lo que necesito saber es si los distintos sums han terminado de procesar todos los mensajes del cliente X: esto me hizo un poco de ruido de como saber dicha información por lo cual opté por una opción quizás no tan elegante pero no vi otra alternativa, y es que el protocolo del gateway lleve la cuenta de cuantos mensajes va despachando de cada cliente, por lo cual al momento de coordinar lo que debo fijarme es que la sumatoria de los sums sea igual al count que hizo el gateway. Hay tres opciones en este caso:
 
 - Que el mensaje llegue al líder y SUMA(mensajes_suma_i) for i in range(sumsAmount) == COUNT(mensajes_gateway). En este caso simplemente tengo que avisarle al resto de nodos sum que despachen el estado del cliente X.
-- Que el mensaje llegue al líder y la suma no de. En este caso, al asumir que no hay caídas, simplemente lo que pasó es que alguno o varios de los sums no termino de consumir todos los mensajes del buffer interno de Rabbit del cliente X.
+- Que el mensaje llegue al líder y la suma no de. En este caso, al asumir que no hay caídas, simplemente lo que pasó es que alguno o varios de los sums no termino de consumir todos los mensajes del buffer interno de Rabbit del cliente X. En este caso simplemente vuelvo a iniciar el anillo y confio en que eventualemente la comparación va a dar. Acá podría haber agregado un conteo de cuantas veces hice la vuelta en el anillo para que no quede loopeando infinitamente pero al asumir no caídas es un caso imposible por lo cual no vi la necesidad de agregarlo, aunque no estaría de más.
 - Que el mensaje no llegue al líder. En este caso simplemente debo sumar los mensajes que yo vi del cliente X al conteo actual que está en el mensaje que viaja a través de Rabbit.
 
 La primera opción que se me ocurrió es que un líder (el que recibió el EOF directo de la working queue) broadcastee a todo el resto de sums a traves de Rabbit que le ha llegado el EOF, y luego cada uno responda individualmente al líder. Esto tenía un costo alto porque deberia crear una queue por cada par de sums posibles, pero tenía la ventaja de que en promedio el tiempo de respuesta iba a ser más alto, limitado por el procesamiento del líder cuando recibe todos los mensajes juntos.
@@ -138,7 +138,7 @@ Entonces la solución es que por cada tupla (cliente, fruta) lo calcule un únic
 
 Finalmente en el join para este escenario debia contar los EOF por cada uno de los aggregations y en el momento que reciba el EOF de uno y cada uno de los Aggregation entonces ahi podia recalcular el top uniendo los resultados locales de cada Aggregation, y quedarme con el top global. Luego despacho el mensaje a Rabbit para que lo reciba el gateway y se lo comunique al cliente.
 
-Dejo un diagrama de la arquitectura final del sum en adelante
+Dejo un diagrama de la arquitectura final del sum en adelante (obviando la queue que se recomunica con el gateway nuevamente).
 
 ![](diagram.png)
 
@@ -146,15 +146,4 @@ Dejo un diagrama de la arquitectura final del sum en adelante
 
 Lo más groso que me quedo fuera de scope es el hecho de los mensajes repetidos. En el join por ejemplo lo handlee porque necesitaba si o si que los aggregations uno y cada uno me envie su EOF por cliente; si no tuviera esto en cuenta el AGG_1 me podría sumar dos veces un EOF y capaz el AGG_3 todavia no lo habia enviado, por lo cual quizas todavía tampoco habia enviado su top. Se que esto debería estar en todos los distintos tipos de nodos pero desconozco como hacerlo por ejemplo en la working queue de los sums; si el mensaje me llega a la misma instancia de Sum es trivial, simplemente le tendria que agregar un ID al msg antes de ser despachado desde el gateway y antes de procesar me fijo si ya lo habia procesado o no, pero si el mensaje duplicado me cae en una instancia distinta de Sum, estoy obligado a coordinar esos mensajes también, para poder descartarlo si alguno de los sums lo procesó ya.
 
-También a último momento borré el uso de UUID que venia usando para identificar a los clientes desde el gateway solo porque relei la aclaración del readme de que archivos se van a reemplazar, y aunque imagino que fue algo que se escapó no mas, al no poder hacer copy del go.sum del client (cosa que en todo el resto de dockerfiles está) no puedo poner una library nueva que no sea estandar. Use la variable global en el messagehandler porque sin poder copiar el go.sum y sin poder más codigo en la folder gateway no tengo otra alternativa.
-
-## TO DO
-
-- [X] Agregar explicacion en README
-- [X] Agregar caso de uso de varias aggregations.
-- [X] Limpiar código de logs innecesarios solo de debug
-- [X] Agregar monitor para no tener los locks a pelo en sum
-- [X] Modularizar bien en las funciones del messagehandler que son un asco y no se entienden nada 
-- [ ] Revisar todo el código de nuevo 
-- [ ] Analizar lo de los mensajes repetidos por rabbit
-
+También a último momento borré el uso de UUID que venia usando para identificar a los clientes desde el gateway solo porque relei la aclaración del readme de que archivos se van a reemplazar, y aunque imagino que fue algo que se escapó no mas, al no poder hacer copy del go.sum del client (cosa que en todo el resto de Dockerfiles sí está hecho) no puedo poner una library nueva que no sea estandar. Use la variable global (horrible) en el messagehandler porque sin poder copiar el go.sum y sin poder agregar más codigo en la folder gateway no tengo otra alternativa.
