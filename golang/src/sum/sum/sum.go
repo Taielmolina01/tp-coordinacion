@@ -17,10 +17,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-const (
-	_EOF_EXCHANGE_MIDD_NAME = "EOF_EXCHANGE"
-)
-
 type SumConfig struct {
 	Id                int
 	MomHost           string
@@ -200,54 +196,50 @@ func (sum *Sum) handleEofMessageFromQueue(msg middleware.Message, ack, nack func
 		// Si soy el líder y la cantidad de todos los mensajes enviados por el cliente (contados por el gateway) y la suma de lo que cada uno
 		// de los sums me dice que proceso, entonces envio el commit otra vez en forma de anillo para que cada uno le pase al exchange de los
 		// aggregations sus mensajes.
-
-		msg, err := inner.SerializeEofMessageCommit(eofringmessage.EofMessageCommit{ClientID: eofRingMessage.ClientId, Hops: 0})
-		if err != nil {
-			slog.Error("Error serializing EOF commit", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
-		}
-		if err = sum.eofOutput.Send(*msg); err != nil {
-			slog.Error("Error sending EOF commit to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
-		}
-		ack()
-		slog.Info("EOF commit sent to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId)
-	} else if eofRingMessage.Leader == sum.id {
-		// Si soy el líder y la cantidad de todos los mensajes enviados por el cliente (contados por el gateway) y la suma de lo que cada uno
-		// de los sums me dice que proceso no coinciden, simplemente inicio el anillo de nuevo. Esto porque estoy asumiendo que lo único que paso
-		// es que un sum no había terminado de procesar los mensajes de un cliente en particular. Como asumimos que no hay caida, eventualmente va a converger
-		// al primer caso.
-
-		value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
-		eofRingMessage.ActualAmount = value
-		serializedEofRingMessage, err := inner.SerializeEofFromQueueMsg(*eofRingMessage)
-		if err != nil {
-			slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
-		}
-		if err := sum.eofOutput.Send(*serializedEofRingMessage); err != nil {
-			slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
-		}
-
-		ack()
+		sum.sendEofCommitToReplicas(eofRingMessage, ack)
 	} else {
-		// Si no soy el líder simplemente sumo los mensajes que yo leí del cliente X y lo sumo al mensaje del ring y lo forwardeo.
+		if eofRingMessage.Leader == sum.id {
+			// Si soy el líder y la cantidad de todos los mensajes enviados por el cliente (contados por el gateway) y la suma de lo que cada uno
+			// de los sums me dice que proceso no coinciden, simplemente inicio el anillo de nuevo. Esto porque estoy asumiendo que lo único que paso
+			// es que un sum no había terminado de procesar los mensajes de un cliente en particular. Como asumimos que no hay caida, eventualmente va a converger
+			// al primer caso.
+			value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
+			eofRingMessage.ActualAmount = value
+		} else if eofRingMessage.Leader != sum.id {
+			// Si no soy el líder simplemente sumo los mensajes que yo leí del cliente X y lo sumo al mensaje del ring y lo forwardeo.
 
-		value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
-		eofRingMessage.ActualAmount += value
-
-		newMsg, err := inner.SerializeEofFromQueueMsg(*eofRingMessage)
-		if err != nil {
-			slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
+			value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
+			eofRingMessage.ActualAmount += value
 		}
-		if err := sum.eofOutput.Send(*newMsg); err != nil {
-			slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
-			return
-		}
 
-		ack()
+		sum.sendEofMessageToQueue(eofRingMessage, ack)
+	}
+}
+
+func (sum *Sum) sendEofCommitToReplicas(eofRingMessage *eofringmessage.EofRingMessage, ack func()) {
+	defer ack()
+	msg, err := inner.SerializeEofMessageCommit(eofringmessage.EofMessageCommit{ClientID: eofRingMessage.ClientId, Hops: 0})
+	if err != nil {
+		slog.Error("Error serializing EOF commit", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+		return
+	}
+	if err = sum.eofOutput.Send(*msg); err != nil {
+		slog.Error("Error sending EOF commit to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+		return
+	}
+	slog.Info("EOF commit sent to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId)
+}
+
+func (sum *Sum) sendEofMessageToQueue(eofRingMessage *eofringmessage.EofRingMessage, ack func()) {
+	defer ack()
+	serializedEofRingMessage, err := inner.SerializeEofFromQueueMsg(*eofRingMessage)
+	if err != nil {
+		slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+		return
+	}
+	if err := sum.eofOutput.Send(*serializedEofRingMessage); err != nil {
+		slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+		return
 	}
 }
 
@@ -370,6 +362,6 @@ func (sum *Sum) Close() error {
 	if err := sum.eofOutput.Close(); err != nil {
 		return err
 	}
-
+	sum.sumMonitor.Close()
 	return nil
 }

@@ -10,6 +10,7 @@ type MonitorSum interface {
 	GetProccessedMessagesAmountByClientId(int) uint32
 	CountNewFruitsFromClient(fruititem.FruitItemFromClient)
 	GetFruitsByClientID(int) map[string]fruititem.FruitItem
+	Close()
 }
 
 type MonitorSumImpl struct {
@@ -68,4 +69,9 @@ func (monitor *MonitorSumImpl) GetFruitsByClientID(clientID int) map[string]frui
 	defer monitor.fruitItemMutex.Unlock()
 
 	return monitor.fruitItemMapPerClient[clientID]
+}
+
+func (monitor *MonitorSumImpl) Close() {
+	clear(monitor.fruitItemMapPerClient)
+	clear(monitor.processedMessagesByClient)
 }

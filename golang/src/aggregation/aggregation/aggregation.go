@@ -88,15 +88,8 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 
 func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient fruititem.FruitItemFromClient) error {
 	aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]++
-	currentCount := aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]
 
-	if currentCount < aggregation.sumAmount {
-		slog.Info("Waiting more EOFs for client", "client_id", fruitItemsFromClient.ClientId, "received_eofs", currentCount, "required_eofs", aggregation.sumAmount)
-		return nil
-	}
-
-	if currentCount > aggregation.sumAmount {
-		slog.Info("Ignoring extra EOF for client", "client_id", fruitItemsFromClient.ClientId, "received_eofs", currentCount, "required_eofs", aggregation.sumAmount)
+	if aggregation.eofCountPerClient[fruitItemsFromClient.ClientId] != aggregation.sumAmount {
 		return nil
 	}
 
@@ -108,7 +101,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient f
 		return err
 	}
 	if err := aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err)
+		slog.Error("While sending top message", "err", err)
 		return err
 	}
 
@@ -117,11 +110,11 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient f
 		AggregationID: aggregation.id,
 	})
 	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
+		slog.Error("While serializing EOF message", "err", err)
 		return err
 	}
 	if err := aggregation.outputQueue.Send(*eofMessage); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
+		slog.Error("While sending EOF message", "err", err)
 		return err
 	}
 
@@ -182,5 +175,7 @@ func (aggregation *Aggregation) Close() error {
 	if err := aggregation.outputQueue.Close(); err != nil {
 		return err
 	}
+	clear(aggregation.eofCountPerClient)
+	clear(aggregation.fruitItemMapPerClient)
 	return nil
 }

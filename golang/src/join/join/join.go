@@ -91,7 +91,7 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 	}
 
 	if _, done := join.completedClients[fruitTop.ClientId]; done {
-		slog.Info("Ignoring late partial top for completed client", "client_id", fruitTop.ClientId)
+		// Si el cliente ya había terminado de ser procesado esto es un duplicado simplemente asique lo ignoro.
 		return
 	}
 
@@ -191,5 +191,8 @@ func (join *Join) Close() error {
 	if err := join.outputQueue.Close(); err != nil {
 		return err
 	}
+	clear(join.completedClients)
+	clear(join.eofByClient)
+	clear(join.topByClients)
 	return nil
 }
