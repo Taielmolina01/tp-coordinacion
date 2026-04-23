@@ -8,6 +8,7 @@ import (
 	"sort"
 	"syscall"
 
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
@@ -27,6 +28,7 @@ type AggregationConfig struct {
 }
 
 type Aggregation struct {
+	id                    int
 	outputQueue           middleware.Middleware
 	inputExchange         middleware.Middleware
 	fruitItemMapPerClient map[uuid.UUID]map[string]fruititem.FruitItem
@@ -51,6 +53,7 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	}
 
 	return &Aggregation{
+		id:                    config.Id,
 		outputQueue:           outputQueue,
 		inputExchange:         inputExchange,
 		fruitItemMapPerClient: map[uuid.UUID]map[string]fruititem.FruitItem{},
@@ -85,8 +88,6 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 }
 
 func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient fruititem.FruitItemFromClient) error {
-	slog.Info("Received End Of Records message", "client_id", fruitItemsFromClient.ClientId)
-
 	aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]++
 	currentCount := aggregation.eofCountPerClient[fruitItemsFromClient.ClientId]
 
@@ -100,8 +101,6 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient f
 		return nil
 	}
 
-	slog.Info("Calculating top...")
-
 	fruitTopRecords := aggregation.buildFruitTop(fruitItemsFromClient.ClientId)
 
 	message, err := inner.SerializeMessage(fruitTopRecords)
@@ -114,15 +113,15 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(fruitItemsFromClient f
 		return err
 	}
 
-	message, err = inner.SerializeMessage(fruititem.FruitItemFromClient{
-		ClientId:   fruitItemsFromClient.ClientId,
-		FruitItems: []fruititem.FruitItem{},
+	eofMessage, err := inner.SerializeAggregationEofMessage(eofmessage.AggregationEofMessage{
+		ClientID:      fruitItemsFromClient.ClientId,
+		AggregationID: aggregation.id,
 	})
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
 	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
+	if err := aggregation.outputQueue.Send(*eofMessage); err != nil {
 		slog.Debug("While sending EOF message", "err", err)
 		return err
 	}

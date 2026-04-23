@@ -7,7 +7,7 @@ type EofMessage struct {
 	ClientID      uuid.UUID
 }
 
-type EofMessageCommit struct {
-	ClientID uuid.UUID
-	Hops     int
+type AggregationEofMessage struct {
+	ClientID      uuid.UUID
+	AggregationID int
 }

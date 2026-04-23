@@ -2,6 +2,7 @@ package sum
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,9 +11,9 @@ import (
 	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofmessage"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofringmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messagesprocessed"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 	"github.com/google/uuid"
 )
@@ -33,19 +34,19 @@ type SumConfig struct {
 }
 
 type Sum struct {
-	id                        uint32
-	inputQueue                middleware.Middleware
-	outputExchange            middleware.Middleware
-	fruitItemMapPerClient     map[uuid.UUID]map[string]fruititem.FruitItem
-	fruitItemMutex            sync.Mutex
-	processedMessagesMutex    sync.Mutex
-	eofOutput                 middleware.Middleware
-	eofInput                  middleware.Middleware
-	processedMessagesByClient map[uuid.UUID]uint32
-	shutdown                  chan struct{}
-	shutdownOnce              sync.Once
-	sumAmount                 int
+	id                 uint32
+	inputQueue         middleware.Middleware
+	outputExchanges    []middleware.Middleware
+	eofOutput          middleware.Middleware
+	eofInput           middleware.Middleware
+	sumMonitor         MonitorSum
+	shutdown           chan struct{}
+	shutdownOnce       sync.Once
+	sumAmount          int
+	aggregationsAmount int
 }
+
+// Inicializadores
 
 func NewSum(config SumConfig) (*Sum, error) {
 	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
@@ -60,10 +61,18 @@ func NewSum(config SumConfig) (*Sum, error) {
 		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
 	}
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
-	if err != nil {
-		inputQueue.Close()
-		return nil, err
+	outputExchanges := make([]middleware.Middleware, 0, config.AggregationAmount)
+	for _, routeKey := range outputExchangeRouteKeys {
+		outputExchange, exchangeErr := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{routeKey}, connSettings)
+		if exchangeErr != nil {
+			inputQueue.Close()
+			for _, exchange := range outputExchanges {
+				exchange.Close()
+			}
+			return nil, exchangeErr
+		}
+
+		outputExchanges = append(outputExchanges, outputExchange)
 	}
 
 	next := config.Id + 1
@@ -72,15 +81,13 @@ func NewSum(config SumConfig) (*Sum, error) {
 		next = 0
 	}
 
-	eofInput, err := middleware.CreateExchangeMiddleware(
-		_EOF_EXCHANGE_MIDD_NAME,
-		[]string{strconv.Itoa(config.Id)},
+	eofInput, err := middleware.CreateQueueMiddleware(
+		strconv.Itoa(config.Id),
 		connSettings,
 	)
 
-	eofOutput, err := middleware.CreateExchangeMiddleware(
-		_EOF_EXCHANGE_MIDD_NAME,
-		[]string{strconv.Itoa(next)},
+	eofOutput, err := middleware.CreateQueueMiddleware(
+		strconv.Itoa(next),
 		connSettings,
 	)
 
@@ -90,17 +97,15 @@ func NewSum(config SumConfig) (*Sum, error) {
 	}
 
 	return &Sum{
-		id:                        uint32(config.Id),
-		inputQueue:                inputQueue,
-		outputExchange:            outputExchange,
-		fruitItemMutex:            sync.Mutex{},
-		processedMessagesMutex:    sync.Mutex{},
-		fruitItemMapPerClient:     map[uuid.UUID]map[string]fruititem.FruitItem{},
-		eofInput:                  eofInput,
-		eofOutput:                 eofOutput,
-		processedMessagesByClient: map[uuid.UUID]uint32{},
-		shutdown:                  make(chan struct{}),
-		sumAmount:                 config.SumAmount,
+		id:                 uint32(config.Id),
+		inputQueue:         inputQueue,
+		outputExchanges:    outputExchanges,
+		sumMonitor:         NewSumMonitor(),
+		eofInput:           eofInput,
+		eofOutput:          eofOutput,
+		shutdown:           make(chan struct{}),
+		sumAmount:          config.SumAmount,
+		aggregationsAmount: config.AggregationAmount,
 	}, nil
 }
 
@@ -116,6 +121,8 @@ func (sum *Sum) Run() {
 	<-sum.shutdown
 }
 
+// Handler para la working queue que comparten las distintas intancias de sum.
+
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
@@ -126,90 +133,118 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	}
 
 	if isEof {
-		slog.Info("Received EOF from input queue", "sum_id", sum.id, "client_id", eofMessage.ClientID, "total_messages", eofMessage.TotalMessages)
-		if err := sum.handleEndOfRecordMessage(*eofMessage); err != nil {
+		if err := sum.handleEOFMessage(*eofMessage); err != nil {
 			slog.Error("While handling end of record message", "sum_id", sum.id, "client_id", eofMessage.ClientID, "err", err)
 		}
 		return
 	}
-
-	slog.Debug("Received data message", "sum_id", sum.id, "client_id", fruitsFromClient.ClientId, "items", len(fruitsFromClient.FruitItems))
 
 	if err := sum.handleDataMessage(*fruitsFromClient); err != nil {
 		slog.Error("While handling data message", "sum_id", sum.id, "client_id", fruitsFromClient.ClientId, "err", err)
 	}
 }
 
+func (sum *Sum) handleEOFMessage(eofMessage eofmessage.EofMessage) error {
+
+	sum.sendFinalMessagesToAggregation(eofMessage.ClientID)
+
+	amount := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofMessage.ClientID)
+
+	eofMessageRequest, err := inner.SerializeEofFromQueueMsg(
+		eofringmessage.EofRingMessage{
+			ActualAmount: amount,
+			RealAmount:   eofMessage.TotalMessages,
+			ClientId:     eofMessage.ClientID,
+			Leader:       uint32(sum.id),
+		},
+	)
+	if err != nil {
+		slog.Error("Error serializing EOF from queue", "sum_id", sum.id, "client_id", eofMessage.ClientID, "err", err)
+		return err
+	}
+	if err := sum.eofOutput.Send(*eofMessageRequest); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (sum *Sum) handleDataMessage(fruitsFromClient fruititem.FruitItemFromClient) error {
+	sum.sumMonitor.CountNewFruitsFromClient(fruitsFromClient)
+	return nil
+}
+
+// Handlers para la queue de productor consumidor del ring.
+
 func (sum *Sum) handleEofMessageFromQueue(msg middleware.Message, ack, nack func()) {
-	processed, commit, err := inner.DeserializeEOFMessage(&msg)
+	eofRingMessage, eofRingCommitMessage, err := inner.DeserializeRingMessage(&msg)
 	if err != nil {
 		slog.Error("Error deserializing EOF ring message", "sum_id", sum.id, "err", err)
-		nack()
 		return
 	}
 
-	if commit != nil {
-		slog.Info("Received EOF commit from ring", "sum_id", sum.id, "client_id", commit.ClientID)
-		if err := sum.handleEndOfRecordCommitMessage(commit); err != nil {
-			nack()
-			slog.Error("Error handling EOF commit", "sum_id", sum.id, "client_id", commit.ClientID, "err", err)
+	if eofRingCommitMessage != nil {
+		if err := sum.handleEOFCommitMessage(eofRingCommitMessage); err != nil {
+			slog.Error("Error handling EOF commit", "sum_id", sum.id, "client_id", eofRingCommitMessage.ClientID, "err", err)
 		} else {
-			slog.Info("EOF commit sent to aggregation", "sum_id", sum.id, "client_id", commit.ClientID)
+			slog.Info("EOF commit sent to aggregation", "sum_id", sum.id, "client_id", eofRingCommitMessage.ClientID)
 			ack()
 		}
 		return
 	}
 
-	if processed == nil {
+	if eofRingMessage == nil {
 		slog.Error("EOF ring message without processed payload", "sum_id", sum.id)
-		nack()
 		return
 	}
 
-	sum.processedMessagesMutex.Lock()
-	defer sum.processedMessagesMutex.Unlock()
-	localAmount := sum.processedMessagesByClient[processed.ClientId]
-	slog.Info(
-		"Processing EOF ring message",
-		"sum_id", sum.id,
-		"client_id", processed.ClientId,
-		"leader", processed.Leader,
-		"ring_actual", processed.ActualAmount,
-		"local_actual", localAmount,
-		"real_total", processed.RealAmount,
-	)
+	if eofRingMessage.Leader == sum.id && eofRingMessage.ActualAmount == eofRingMessage.RealAmount {
+		// Si soy el líder y la cantidad de todos los mensajes enviados por el cliente (contados por el gateway) y la suma de lo que cada uno
+		// de los sums me dice que proceso, entonces envio el commit otra vez en forma de anillo para que cada uno le pase al exchange de los
+		// aggregations sus mensajes.
 
-	if processed.Leader == sum.id && processed.ActualAmount == processed.RealAmount {
-		slog.Info("EOF ring closed, emitting commit", "sum_id", sum.id, "client_id", processed.ClientId)
-		msg, err := inner.SerializeEofMessageCommit(eofmessage.EofMessageCommit{ClientID: processed.ClientId, Hops: 0})
+		msg, err := inner.SerializeEofMessageCommit(eofringmessage.EofMessageCommit{ClientID: eofRingMessage.ClientId, Hops: 0})
 		if err != nil {
-			nack()
-			slog.Error("Error serializing EOF commit", "sum_id", sum.id, "client_id", processed.ClientId, "err", err)
+			slog.Error("Error serializing EOF commit", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
 			return
 		}
 		if err = sum.eofOutput.Send(*msg); err != nil {
-			nack()
-			slog.Error("Error sending EOF commit to ring", "sum_id", sum.id, "client_id", processed.ClientId, "err", err)
+			slog.Error("Error sending EOF commit to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
 			return
 		}
 		ack()
-		slog.Info("EOF commit sent to ring", "sum_id", sum.id, "client_id", processed.ClientId)
-	} else {
-		value, ok := sum.processedMessagesByClient[processed.ClientId]
-		if ok {
-			processed.ActualAmount += value
-		}
-		slog.Info("Forwarding EOF ring message", "sum_id", sum.id, "client_id", processed.ClientId, "forwarded_actual", processed.ActualAmount, "real_total", processed.RealAmount)
+		slog.Info("EOF commit sent to ring", "sum_id", sum.id, "client_id", eofRingMessage.ClientId)
+	} else if eofRingMessage.Leader == sum.id {
+		// Si soy el líder y la cantidad de todos los mensajes enviados por el cliente (contados por el gateway) y la suma de lo que cada uno
+		// de los sums me dice que proceso no coinciden, simplemente inicio el anillo de nuevo. Esto porque estoy asumiendo que lo único que paso
+		// es que un sum no había terminado de procesar los mensajes de un cliente en particular. Como asumimos que no hay caida, eventualmente va a converger
+		// al primer caso.
 
-		newMsg, err := inner.SerializeEofFromQueueMsg(*processed)
+		value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
+		eofRingMessage.ActualAmount = value
+		serializedEofRingMessage, err := inner.SerializeEofFromQueueMsg(*eofRingMessage)
 		if err != nil {
-			nack()
-			slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", processed.ClientId, "err", err)
+			slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+			return
+		}
+		if err := sum.eofOutput.Send(*serializedEofRingMessage); err != nil {
+			slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
+			return
+		}
+
+		ack()
+	} else {
+		// Si no soy el líder simplemente sumo los mensajes que yo leí del cliente X y lo sumo al mensaje del ring y lo forwardeo.
+
+		value := sum.sumMonitor.GetProccessedMessagesAmountByClientId(eofRingMessage.ClientId)
+		eofRingMessage.ActualAmount += value
+
+		newMsg, err := inner.SerializeEofFromQueueMsg(*eofRingMessage)
+		if err != nil {
+			slog.Error("Error serializing forwarded EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
 			return
 		}
 		if err := sum.eofOutput.Send(*newMsg); err != nil {
-			nack()
-			slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", processed.ClientId, "err", err)
+			slog.Error("Error forwarding EOF ring message", "sum_id", sum.id, "client_id", eofRingMessage.ClientId, "err", err)
 			return
 		}
 
@@ -217,41 +252,76 @@ func (sum *Sum) handleEofMessageFromQueue(msg middleware.Message, ack, nack func
 	}
 }
 
-func (sum *Sum) handleEndOfRecordCommitMessage(msg *eofmessage.EofMessageCommit) error {
-	slog.Info("Sending aggregated client result", "sum_id", sum.id, "client_id", msg.ClientID, "fruits", len(sum.fruitItemMapPerClient[msg.ClientID]))
-	sum.fruitItemMutex.Lock()
-	for _, value := range sum.fruitItemMapPerClient[msg.ClientID] {
-		message, err := inner.SerializeMessage(fruititem.FruitItemFromClient{
-			ClientId:   msg.ClientID,
-			FruitItems: []fruititem.FruitItem{value},
-		})
-		if err != nil {
-			slog.Debug("While serializing message", "err", err)
-			return err
-		}
-		if err := sum.outputExchange.Send(*message); err != nil {
+// Handlers para cuando se recibe un EOF commit del ring.
+
+func (sum *Sum) convertToBytes(fruitName string, clientIdStr string) []byte {
+	return []byte(fmt.Sprintf("%v%v", fruitName, clientIdStr))
+}
+
+func (sum *Sum) calculateIndexForShard(fruitItem fruititem.FruitItem, clientId uuid.UUID) int {
+	bytes := sum.convertToBytes(fruitItem.Fruit, clientId.String())
+	hash := fnv.New64a()
+	hash.Write(bytes)
+	return int(hash.Sum64() % uint64(sum.aggregationsAmount))
+}
+
+func (sum *Sum) sendMessageToAggregation(fruitItemFromClient *fruititem.FruitItemFromClient) error {
+	message, err := inner.SerializeMessage(*fruitItemFromClient)
+	if err != nil {
+		slog.Debug("While serializing message", "err", err)
+		return err
+	}
+	for _, fruitItem := range fruitItemFromClient.FruitItems {
+		index := sum.calculateIndexForShard(fruitItem, fruitItemFromClient.ClientId)
+		if err := sum.outputExchanges[index].Send(*message); err != nil {
 			slog.Debug("While sending message", "err", err)
 			return err
 		}
 	}
-	sum.fruitItemMutex.Unlock()
 
-	eofMessage := []fruititem.FruitItem{}
-	message, err := inner.SerializeMessage(fruititem.FruitItemFromClient{
-		ClientId:   msg.ClientID,
-		FruitItems: eofMessage,
-	})
+	return nil
+}
+
+func (sum *Sum) broadcastEofMessageToAggregation(clientID uuid.UUID) error {
+	eofMessage := fruititem.FruitItemFromClient{
+		ClientId:   clientID,
+		FruitItems: []fruititem.FruitItem{},
+	}
+	message, err := inner.SerializeMessage(eofMessage)
 	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
+		slog.Debug("While serializing message", "err", err)
 		return err
 	}
-	if err := sum.outputExchange.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-		return err
+	for i := range sum.outputExchanges {
+		if err := sum.outputExchanges[i].Send(*message); err != nil {
+			slog.Debug("While sending message", "err", err)
+			return err
+		}
 	}
-	slog.Info("Finished sending client result and EOF", "sum_id", sum.id, "client_id", msg.ClientID)
+
+	return nil
+}
+
+func (sum *Sum) sendFinalMessagesToAggregation(clientID uuid.UUID) {
+	for _, value := range sum.sumMonitor.GetFruitsByClientID(clientID) {
+		sum.sendMessageToAggregation(&fruititem.FruitItemFromClient{
+			ClientId:   clientID,
+			FruitItems: []fruititem.FruitItem{value},
+		})
+	}
+
+	sum.broadcastEofMessageToAggregation(clientID)
+}
+
+func (sum *Sum) handleEOFCommitMessage(msg *eofringmessage.EofMessageCommit) error {
+
+	sum.sendFinalMessagesToAggregation(msg.ClientID)
+
 	msg.Hops++
-	if msg.Hops == sum.sumAmount {
+
+	if msg.Hops == sum.sumAmount-1 {
+		// Si soy el último nodo antes del lider simplemente no le forwardeo el mensaje de commit porque el líder antes de iniciar
+		// el anillo envia sus datos al aggregation.
 		return nil
 	}
 
@@ -264,71 +334,9 @@ func (sum *Sum) handleEndOfRecordCommitMessage(msg *eofmessage.EofMessageCommit)
 
 	if err = sum.eofOutput.Send(*toSend); err != nil {
 		slog.Error("Error sending EOF commit to ring", "sum_id", sum.id, "client_id", msg.ClientID, "err", err)
-	}
-	return nil
-
-}
-
-func (sum *Sum) handleEndOfRecordMessage(eofMessage eofmessage.EofMessage) error {
-	slog.Info("Received End Of Records message", "sum_id", sum.id, "client_id", eofMessage.ClientID, "real_total", eofMessage.TotalMessages)
-
-	sum.processedMessagesMutex.Lock()
-	amount, ok := sum.processedMessagesByClient[eofMessage.ClientID]
-	sum.processedMessagesMutex.Unlock()
-	if !ok {
-		amount = 0
-	}
-	slog.Info("Publishing EOF ring message", "sum_id", sum.id, "client_id", eofMessage.ClientID, "local_actual", amount, "real_total", eofMessage.TotalMessages)
-
-	eofMessageRequest, err := inner.SerializeEofFromQueueMsg(
-		messagesprocessed.MessagesProcessed{
-			ActualAmount: amount,
-			RealAmount:   eofMessage.TotalMessages,
-			ClientId:     eofMessage.ClientID,
-			Leader:       uint32(sum.id),
-		},
-	)
-	if err != nil {
 		return err
 	}
-	if err := sum.eofOutput.Send(*eofMessageRequest); err != nil {
-		return err
-	}
-	return nil
-}
 
-func (sum *Sum) handleDataMessage(fruitsFromClient fruititem.FruitItemFromClient) error {
-	sum.fruitItemMutex.Lock()
-	if _, ok := sum.fruitItemMapPerClient[fruitsFromClient.ClientId]; !ok {
-		sum.fruitItemMapPerClient[fruitsFromClient.ClientId] = map[string]fruititem.FruitItem{}
-	}
-
-	for _, fruitRecord := range fruitsFromClient.FruitItems {
-		_, ok := sum.fruitItemMapPerClient[fruitsFromClient.ClientId][fruitRecord.Fruit]
-		if ok {
-			sum.fruitItemMapPerClient[fruitsFromClient.ClientId][fruitRecord.Fruit] = sum.fruitItemMapPerClient[fruitsFromClient.ClientId][fruitRecord.Fruit].Sum(fruitRecord)
-		} else {
-			sum.fruitItemMapPerClient[fruitsFromClient.ClientId][fruitRecord.Fruit] = fruitRecord
-		}
-	}
-	sum.fruitItemMutex.Unlock()
-
-	sum.processedMessagesMutex.Lock()
-	defer sum.processedMessagesMutex.Unlock()
-	_, ok := sum.processedMessagesByClient[fruitsFromClient.ClientId]
-	if ok {
-		sum.processedMessagesByClient[fruitsFromClient.ClientId] += 1
-	} else {
-		sum.processedMessagesByClient[fruitsFromClient.ClientId] = 1
-	}
-
-	slog.Debug(
-		"Updated client partials",
-		"sum_id", sum.id,
-		"client_id", fruitsFromClient.ClientId,
-		"processed_messages", sum.processedMessagesByClient[fruitsFromClient.ClientId],
-		"distinct_fruits", len(sum.fruitItemMapPerClient[fruitsFromClient.ClientId]),
-	)
 	return nil
 }
 
@@ -352,11 +360,17 @@ func (sum *Sum) Close() error {
 	if err := sum.inputQueue.Close(); err != nil {
 		return err
 	}
-	if err := sum.outputExchange.StopConsuming(); err != nil {
+	for i := range sum.outputExchanges {
+		if err := sum.outputExchanges[i].StopConsuming(); err != nil {
+			return err
+		}
+		if err := sum.outputExchanges[i].Close(); err != nil {
+			return err
+		}
+	}
+	if err := sum.eofOutput.Close(); err != nil {
 		return err
 	}
-	if err := sum.outputExchange.Close(); err != nil {
-		return err
-	}
+
 	return nil
 }

@@ -5,11 +5,13 @@ import (
 	"errors"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofmessage"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofringmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messagesprocessed"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 	"github.com/google/uuid"
 )
+
+const _AGGREGATION_ID = "agg"
 
 func serializeJson(message []interface{}) ([]byte, error) {
 	return json.Marshal(message)
@@ -91,66 +93,77 @@ func DeserializeMessage(message *middleware.Message) (*fruititem.FruitItemFromCl
 	return &result, nil, len(result.FruitItems) == 0, nil
 }
 
-func DeserializeEOFMessage(message *middleware.Message) (*messagesprocessed.MessagesProcessed, *eofmessage.EofMessageCommit, error) {
+func DeserializeEofRingMessage(data []interface{}) (*eofringmessage.EofRingMessage, error) {
+	leaderAsFloat, ok := data[0].(float64)
+	if !ok {
+		return nil, errors.New("LeaderID is not a non negative number")
+	}
+	actualAmountAsFloat, ok := data[1].(float64)
+	if !ok {
+		return nil, errors.New("Actual amount of messages handled is not a non negative number")
+	}
+	realAmountAsFloat, ok := data[2].(float64)
+	if !ok {
+		return nil, errors.New("Real amount of messages handled is not a non negative number")
+	}
+	clientID, ok := data[3].(string)
+	if !ok {
+		return nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	parsedClientID, err := uuid.Parse(clientID)
+	if err != nil {
+		return nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	return &eofringmessage.EofRingMessage{
+		Leader:       uint32(leaderAsFloat),
+		ActualAmount: uint32(actualAmountAsFloat),
+		RealAmount:   uint32(realAmountAsFloat),
+		ClientId:     parsedClientID,
+	}, nil
+}
+
+func DeserializeEofCommitRingMessage(data []interface{}) (*eofringmessage.EofMessageCommit, error) {
+	clientID, ok := data[0].(string)
+	if !ok {
+		return nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	parsedClientID, err := uuid.Parse(clientID)
+	if err != nil {
+		return nil, errors.New("Client ID is not a valid UUID")
+	}
+
+	hopsAsFloat, ok := data[1].(float64)
+	if !ok {
+		return nil, errors.New("Hops is not a valid number")
+	}
+
+	return &eofringmessage.EofMessageCommit{ClientID: parsedClientID, Hops: int(hopsAsFloat)}, nil
+}
+
+func DeserializeRingMessage(message *middleware.Message) (*eofringmessage.EofRingMessage, *eofringmessage.EofMessageCommit, error) {
 	data, err := deserializeJson([]byte(message.Body))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if len(data) == 2 {
-		clientID, ok := data[0].(string)
-		if !ok {
-			return nil, nil, errors.New("Client ID is not a valid UUID")
-		}
-
-		parsedClientID, err := uuid.Parse(clientID)
-		if err != nil {
-			return nil, nil, errors.New("Client ID is not a valid UUID")
-		}
-
-		hopsAsFloat, ok := data[1].(float64)
-		if !ok {
-			return nil, nil, errors.New("Hops is not a valid number")
-		}
-
-		return nil, &eofmessage.EofMessageCommit{ClientID: parsedClientID, Hops: int(hopsAsFloat)}, nil
-	}
-
-	if len(data) != 4 {
+	if len(data) != 2 && len(data) != 4 {
 		return nil, nil, errors.New("EOF message has an invalid shape")
 	}
 
-	leaderAsFloat, ok := data[0].(float64)
-	if !ok {
-		return nil, nil, errors.New("LeaderID is not a non negative number")
-	}
-	actualAmountAsFloat, ok := data[1].(float64)
-	if !ok {
-		return nil, nil, errors.New("Actual amount of messages handled is not a non negative number")
-	}
-	realAmountAsFloat, ok := data[2].(float64)
-	if !ok {
-		return nil, nil, errors.New("Real amount of messages handled is not a non negative number")
-	}
-	clientID, ok := data[3].(string)
-	if !ok {
-		return nil, nil, errors.New("Client ID is not a valid UUID")
+	if len(data) == 2 {
+		eofCommitRingMessage, err := DeserializeEofCommitRingMessage(data)
+		return nil, eofCommitRingMessage, err
 	}
 
-	parsedClientID, err := uuid.Parse(clientID)
-	if err != nil {
-		return nil, nil, errors.New("Client ID is not a valid UUID")
-	}
+	eofRingMessage, err := DeserializeEofRingMessage(data)
+	return eofRingMessage, nil, err
 
-	return &messagesprocessed.MessagesProcessed{
-		Leader:       uint32(leaderAsFloat),
-		ActualAmount: uint32(actualAmountAsFloat),
-		RealAmount:   uint32(realAmountAsFloat),
-		ClientId:     parsedClientID,
-	}, nil, nil
 }
 
-func SerializeEofFromQueueMsg(msg messagesprocessed.MessagesProcessed) (*middleware.Message, error) {
+func SerializeEofFromQueueMsg(msg eofringmessage.EofRingMessage) (*middleware.Message, error) {
 	data, err := serializeJson([]interface{}{msg.Leader, msg.ActualAmount, msg.RealAmount, msg.ClientId})
 	if err != nil {
 		return nil, err
@@ -170,7 +183,7 @@ func SerializeEofMessage(msg eofmessage.EofMessage) (*middleware.Message, error)
 	}, nil
 }
 
-func SerializeEofMessageCommit(msg eofmessage.EofMessageCommit) (*middleware.Message, error) {
+func SerializeEofMessageCommit(msg eofringmessage.EofMessageCommit) (*middleware.Message, error) {
 	data, err := serializeJson([]interface{}{msg.ClientID, msg.Hops})
 	if err != nil {
 		return nil, err
@@ -178,4 +191,49 @@ func SerializeEofMessageCommit(msg eofmessage.EofMessageCommit) (*middleware.Mes
 	return &middleware.Message{
 		Body: string(data),
 	}, nil
+}
+
+func SerializeAggregationEofMessage(msg eofmessage.AggregationEofMessage) (*middleware.Message, error) {
+	data, err := serializeJson([]interface{}{_AGGREGATION_ID, msg.ClientID, msg.AggregationID})
+	if err != nil {
+		return nil, err
+	}
+	return &middleware.Message{
+		Body: string(data),
+	}, nil
+}
+
+func DeserializeAggregationEofMessage(message *middleware.Message) (*eofmessage.AggregationEofMessage, bool, error) {
+	data, err := deserializeJson([]byte(message.Body))
+	if err != nil {
+		return nil, false, err
+	}
+
+	if len(data) != 3 {
+		return nil, false, nil
+	}
+
+	tag, ok := data[0].(string)
+	if !ok || tag != _AGGREGATION_ID {
+		return nil, false, nil
+	}
+
+	clientIDRaw, ok := data[1].(string)
+	if !ok {
+		return nil, false, errors.New("Aggregation EOF message has invalid client ID")
+	}
+	clientID, err := uuid.Parse(clientIDRaw)
+	if err != nil {
+		return nil, false, errors.New("Aggregation EOF message has invalid client ID")
+	}
+
+	aggregationIDRaw, ok := data[2].(float64)
+	if !ok {
+		return nil, false, errors.New("Aggregation EOF message has invalid aggregation ID")
+	}
+
+	return &eofmessage.AggregationEofMessage{
+		ClientID:      clientID,
+		AggregationID: int(aggregationIDRaw),
+	}, true, nil
 }
