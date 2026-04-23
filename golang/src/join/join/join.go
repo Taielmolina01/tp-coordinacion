@@ -11,7 +11,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
-	"github.com/google/uuid"
 )
 
 type JoinConfig struct {
@@ -29,9 +28,9 @@ type JoinConfig struct {
 type Join struct {
 	inputQueue        middleware.Middleware
 	outputQueue       middleware.Middleware
-	topByClients      map[uuid.UUID][]fruititem.FruitItemFromClient
-	eofByClient       map[uuid.UUID]map[int]bool
-	completedClients  map[uuid.UUID]bool
+	topByClients      map[int][]fruititem.FruitItemFromClient
+	eofByClient       map[int]map[int]bool
+	completedClients  map[int]bool
 	topSize           int
 	aggregationAmount int
 }
@@ -53,9 +52,9 @@ func NewJoin(config JoinConfig) (*Join, error) {
 	return &Join{
 			inputQueue:        inputQueue,
 			outputQueue:       outputQueue,
-			topByClients:      map[uuid.UUID][]fruititem.FruitItemFromClient{},
-			eofByClient:       map[uuid.UUID]map[int]bool{},
-			completedClients:  map[uuid.UUID]bool{},
+			topByClients:      map[int][]fruititem.FruitItemFromClient{},
+			eofByClient:       map[int]map[int]bool{},
+			completedClients:  map[int]bool{},
 			topSize:           config.TopSize,
 			aggregationAmount: config.AggregationAmount,
 		},
@@ -143,7 +142,7 @@ func (join *Join) handleAggregationEof(eofMsg eofmessage.AggregationEofMessage) 
 	delete(join.topByClients, eofMsg.ClientID)
 }
 
-func (join *Join) CalculateTop(clientID uuid.UUID) fruititem.FruitItemFromClient {
+func (join *Join) CalculateTop(clientID int) fruititem.FruitItemFromClient {
 	amountByFruit := map[string]fruititem.FruitItem{}
 	for i := range join.topByClients[clientID] {
 		for _, fruitRecord := range join.topByClients[clientID][i].FruitItems {

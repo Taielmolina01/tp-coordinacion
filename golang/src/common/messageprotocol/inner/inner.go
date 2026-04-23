@@ -3,12 +3,12 @@ package inner
 import (
 	"encoding/json"
 	"errors"
+	"math"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/eofringmessage"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
-	"github.com/google/uuid"
 )
 
 const _AGGREGATION_ID = "agg"
@@ -23,6 +23,17 @@ func deserializeJson(message []byte) ([]interface{}, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+func parseClientID(raw interface{}) (int, error) {
+	clientIDAsFloat, ok := raw.(float64)
+	if !ok {
+		return 0, errors.New("Client ID is not a valid number")
+	}
+	if clientIDAsFloat < 0 || math.Trunc(clientIDAsFloat) != clientIDAsFloat {
+		return 0, errors.New("Client ID must be a non-negative integer")
+	}
+	return int(clientIDAsFloat), nil
 }
 
 func SerializeMessage(fruitRecords fruititem.FruitItemFromClient) (*middleware.Message, error) {
@@ -51,12 +62,12 @@ func DeserializeMessage(message *middleware.Message) (*fruititem.FruitItemFromCl
 		return nil, nil, false, err
 	}
 	result := fruititem.FruitItemFromClient{}
-	var clientId uuid.UUID
+	var clientId int
 	for i, datum := range data {
 		if i == 0 {
-			_clientId, err := uuid.Parse(datum.(string))
+			_clientId, err := parseClientID(datum)
 			if err != nil {
-				return nil, nil, false, errors.New("Error parsing clientId to float64")
+				return nil, nil, false, err
 			}
 			clientId = _clientId
 			continue
@@ -106,14 +117,9 @@ func DeserializeEofRingMessage(data []interface{}) (*eofringmessage.EofRingMessa
 	if !ok {
 		return nil, errors.New("Real amount of messages handled is not a non negative number")
 	}
-	clientID, ok := data[3].(string)
-	if !ok {
-		return nil, errors.New("Client ID is not a valid UUID")
-	}
-
-	parsedClientID, err := uuid.Parse(clientID)
+	parsedClientID, err := parseClientID(data[3])
 	if err != nil {
-		return nil, errors.New("Client ID is not a valid UUID")
+		return nil, err
 	}
 
 	return &eofringmessage.EofRingMessage{
@@ -125,14 +131,9 @@ func DeserializeEofRingMessage(data []interface{}) (*eofringmessage.EofRingMessa
 }
 
 func DeserializeEofCommitRingMessage(data []interface{}) (*eofringmessage.EofMessageCommit, error) {
-	clientID, ok := data[0].(string)
-	if !ok {
-		return nil, errors.New("Client ID is not a valid UUID")
-	}
-
-	parsedClientID, err := uuid.Parse(clientID)
+	parsedClientID, err := parseClientID(data[0])
 	if err != nil {
-		return nil, errors.New("Client ID is not a valid UUID")
+		return nil, err
 	}
 
 	hopsAsFloat, ok := data[1].(float64)
@@ -218,11 +219,7 @@ func DeserializeAggregationEofMessage(message *middleware.Message) (*eofmessage.
 		return nil, false, nil
 	}
 
-	clientIDRaw, ok := data[1].(string)
-	if !ok {
-		return nil, false, errors.New("Aggregation EOF message has invalid client ID")
-	}
-	clientID, err := uuid.Parse(clientIDRaw)
+	clientID, err := parseClientID(data[1])
 	if err != nil {
 		return nil, false, errors.New("Aggregation EOF message has invalid client ID")
 	}

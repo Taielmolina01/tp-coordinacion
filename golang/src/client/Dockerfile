@@ -4,7 +4,6 @@ LABEL intermediateStageToBeDeleted=true
 RUN mkdir -p /build
 WORKDIR /build/
 COPY go.mod .
-COPY go.sum .
 COPY common ./common
 RUN go mod download
 COPY client .

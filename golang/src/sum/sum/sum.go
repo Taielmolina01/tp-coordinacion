@@ -15,7 +15,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
-	"github.com/google/uuid"
 )
 
 const (
@@ -254,12 +253,12 @@ func (sum *Sum) handleEofMessageFromQueue(msg middleware.Message, ack, nack func
 
 // Handlers para cuando se recibe un EOF commit del ring.
 
-func (sum *Sum) convertToBytes(fruitName string, clientIdStr string) []byte {
-	return []byte(fmt.Sprintf("%v%v", fruitName, clientIdStr))
+func (sum *Sum) convertToBytes(fruitName string, clientID int) []byte {
+	return []byte(fmt.Sprintf("%v%d", fruitName, clientID))
 }
 
-func (sum *Sum) calculateIndexForShard(fruitItem fruititem.FruitItem, clientId uuid.UUID) int {
-	bytes := sum.convertToBytes(fruitItem.Fruit, clientId.String())
+func (sum *Sum) calculateIndexForShard(fruitItem fruititem.FruitItem, clientID int) int {
+	bytes := sum.convertToBytes(fruitItem.Fruit, clientID)
 	hash := fnv.New64a()
 	hash.Write(bytes)
 	return int(hash.Sum64() % uint64(sum.aggregationsAmount))
@@ -282,7 +281,7 @@ func (sum *Sum) sendMessageToAggregation(fruitItemFromClient *fruititem.FruitIte
 	return nil
 }
 
-func (sum *Sum) broadcastEofMessageToAggregation(clientID uuid.UUID) error {
+func (sum *Sum) broadcastEofMessageToAggregation(clientID int) error {
 	eofMessage := fruititem.FruitItemFromClient{
 		ClientId:   clientID,
 		FruitItems: []fruititem.FruitItem{},
@@ -302,7 +301,7 @@ func (sum *Sum) broadcastEofMessageToAggregation(clientID uuid.UUID) error {
 	return nil
 }
 
-func (sum *Sum) sendFinalMessagesToAggregation(clientID uuid.UUID) {
+func (sum *Sum) sendFinalMessagesToAggregation(clientID int) {
 	for _, value := range sum.sumMonitor.GetFruitsByClientID(clientID) {
 		sum.sendMessageToAggregation(&fruititem.FruitItemFromClient{
 			ClientId:   clientID,

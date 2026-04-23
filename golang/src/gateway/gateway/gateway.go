@@ -154,7 +154,7 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 				continue
 			}
 
-			if err := external.WriteFruitTop(client.Conn, fruitTop.FruitItems); err != nil {
+			if err := external.WriteFruitTop(client.Conn, fruitTop); err != nil {
 				slog.Debug("While writing FRUIT_TOP message", "err", err)
 				return
 			}
@@ -180,8 +180,6 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 		ack()
 		return
 	}
-
-	nack()
 }
 
 func (gateway *Gateway) handleFruitRecordMessage(client clientregistry.ClientState) error {

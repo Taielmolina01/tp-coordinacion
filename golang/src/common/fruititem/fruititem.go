@@ -2,8 +2,6 @@ package fruititem
 
 import (
 	"fmt"
-
-	"github.com/google/uuid"
 )
 
 type FruitItem struct {
@@ -24,7 +22,7 @@ func (fruitItem FruitItem) Less(other FruitItem) bool {
 }
 
 type FruitItemFromClient struct {
-	ClientId   uuid.UUID
+	ClientId   int
 	FruitItems []FruitItem
 }
 

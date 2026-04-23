@@ -12,7 +12,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
-	"github.com/google/uuid"
 )
 
 type AggregationConfig struct {
@@ -31,8 +30,8 @@ type Aggregation struct {
 	id                    int
 	outputQueue           middleware.Middleware
 	inputExchange         middleware.Middleware
-	fruitItemMapPerClient map[uuid.UUID]map[string]fruititem.FruitItem
-	eofCountPerClient     map[uuid.UUID]int
+	fruitItemMapPerClient map[int]map[string]fruititem.FruitItem
+	eofCountPerClient     map[int]int
 	topSize               int
 	sumAmount             int
 }
@@ -56,10 +55,10 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		id:                    config.Id,
 		outputQueue:           outputQueue,
 		inputExchange:         inputExchange,
-		fruitItemMapPerClient: map[uuid.UUID]map[string]fruititem.FruitItem{},
+		fruitItemMapPerClient: map[int]map[string]fruititem.FruitItem{},
 		topSize:               config.TopSize,
 		sumAmount:             config.SumAmount,
-		eofCountPerClient:     map[uuid.UUID]int{},
+		eofCountPerClient:     map[int]int{},
 	}, nil
 }
 
@@ -146,7 +145,7 @@ func (aggregation *Aggregation) handleDataMessage(fruitItemsForClient fruititem.
 	}
 }
 
-func (aggregation *Aggregation) buildFruitTop(clientId uuid.UUID) fruititem.FruitItemFromClient {
+func (aggregation *Aggregation) buildFruitTop(clientId int) fruititem.FruitItemFromClient {
 	fruitItemsFromClient := fruititem.FruitItemFromClient{
 		ClientId:   clientId,
 		FruitItems: make([]fruititem.FruitItem, 0, len(aggregation.fruitItemMapPerClient[clientId])),

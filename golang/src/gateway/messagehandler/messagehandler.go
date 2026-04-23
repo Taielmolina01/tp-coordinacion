@@ -6,11 +6,12 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
-	"github.com/google/uuid"
 )
 
+var clientId = 0
+
 type MessageHandler struct {
-	clientId          uuid.UUID
+	clientId          int
 	processedMessages uint32
 }
 
@@ -19,7 +20,9 @@ type MessageEof struct {
 }
 
 func NewMessageHandler() MessageHandler {
-	return MessageHandler{clientId: uuid.New()}
+	response := MessageHandler{clientId: clientId}
+	clientId++
+	return response
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
@@ -39,7 +42,7 @@ func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message
 	return inner.SerializeEofMessage(data)
 }
 
-func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) (*fruititem.FruitItemFromClient, error) {
+func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {
 	fruitRecords, _, _, err := inner.DeserializeMessage(message)
 	if err != nil {
 		return nil, err
@@ -48,7 +51,7 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 	if fruitRecords == nil || fruitRecords.ClientId != messageHandler.clientId {
 		return nil, nil
 	}
-	return fruitRecords, nil
+	return fruitRecords.FruitItems, nil
 }
 
 func (messageHandler *MessageHandler) DeserializeRingMessage(message *middleware.Message) (*eofringmessage.EofRingMessage, *eofringmessage.EofMessageCommit, error) {

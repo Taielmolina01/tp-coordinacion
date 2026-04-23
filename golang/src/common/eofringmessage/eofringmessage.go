@@ -1,15 +1,13 @@
 package eofringmessage
 
-import "github.com/google/uuid"
-
 type EofRingMessage struct {
 	ActualAmount uint32
 	RealAmount   uint32
-	ClientId     uuid.UUID
+	ClientId     int
 	Leader       uint32
 }
 
 type EofMessageCommit struct {
-	ClientID uuid.UUID
+	ClientID int
 	Hops     int
 }

@@ -1,13 +1,11 @@
 package eofmessage
 
-import "github.com/google/uuid"
-
 type EofMessage struct {
 	TotalMessages uint32
-	ClientID      uuid.UUID
+	ClientID      int
 }
 
 type AggregationEofMessage struct {
-	ClientID      uuid.UUID
+	ClientID      int
 	AggregationID int
 }

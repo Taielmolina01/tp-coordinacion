@@ -4,18 +4,17 @@ import (
 	"sync"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
-	"github.com/google/uuid"
 )
 
 type MonitorSum interface {
-	GetProccessedMessagesAmountByClientId(uuid.UUID) uint32
+	GetProccessedMessagesAmountByClientId(int) uint32
 	CountNewFruitsFromClient(fruititem.FruitItemFromClient)
-	GetFruitsByClientID(uuid.UUID) map[string]fruititem.FruitItem
+	GetFruitsByClientID(int) map[string]fruititem.FruitItem
 }
 
 type MonitorSumImpl struct {
-	fruitItemMapPerClient     map[uuid.UUID]map[string]fruititem.FruitItem
-	processedMessagesByClient map[uuid.UUID]uint32
+	fruitItemMapPerClient     map[int]map[string]fruititem.FruitItem
+	processedMessagesByClient map[int]uint32
 	fruitItemMutex            sync.Mutex
 	processedMessagesMutex    sync.Mutex
 }
@@ -24,12 +23,12 @@ func NewSumMonitor() MonitorSum {
 	return &MonitorSumImpl{
 		fruitItemMutex:            sync.Mutex{},
 		processedMessagesMutex:    sync.Mutex{},
-		fruitItemMapPerClient:     map[uuid.UUID]map[string]fruititem.FruitItem{},
-		processedMessagesByClient: map[uuid.UUID]uint32{},
+		fruitItemMapPerClient:     map[int]map[string]fruititem.FruitItem{},
+		processedMessagesByClient: map[int]uint32{},
 	}
 }
 
-func (monitor *MonitorSumImpl) GetProccessedMessagesAmountByClientId(clientID uuid.UUID) uint32 {
+func (monitor *MonitorSumImpl) GetProccessedMessagesAmountByClientId(clientID int) uint32 {
 	monitor.processedMessagesMutex.Lock()
 	defer monitor.processedMessagesMutex.Unlock()
 	amount, _ := monitor.processedMessagesByClient[clientID]
@@ -64,7 +63,7 @@ func (monitor *MonitorSumImpl) CountNewFruitsFromClient(fruitsFromClient fruitit
 	}
 }
 
-func (monitor *MonitorSumImpl) GetFruitsByClientID(clientID uuid.UUID) map[string]fruititem.FruitItem {
+func (monitor *MonitorSumImpl) GetFruitsByClientID(clientID int) map[string]fruititem.FruitItem {
 	monitor.fruitItemMutex.Lock()
 	defer monitor.fruitItemMutex.Unlock()
 
